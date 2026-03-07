@@ -1,0 +1,15 @@
+# Python stuff
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Project specific
+uploads/
+*.pdf
+*.docx
+
+# OS stuff
+.DS_Store
+Thumbs.db
