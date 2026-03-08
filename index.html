@@ -132,6 +132,9 @@
     .page-badge:hover { background: var(--accent-glow); border-color: var(--accent); }
     .sources-list { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 
+    .cursor { display: inline-block; animation: blink 0.7s step-end infinite; color: var(--accent); margin-left: 1px; }
+    @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
+
     @keyframes spin { to { transform: rotate(360deg); } }
     .spin { animation: spin 1s linear infinite; }
 
@@ -408,17 +411,100 @@
       showTyping();
 
       try {
-        const res = await fetch(`${API_BASE}/ask`, {
+        const res = await fetch(`${API_BASE}/ask/stream`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: q, file_id: fileId })
         });
-        const data = await res.json();
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let msgDiv = null;
+        let bubbleEl = null;
+        let metaEl = null;
+        let source = 'llm';
+        let sources = [];
+        let fullText = '';
+
         hideTyping();
-        appendMessage('ai', data.answer, data.source, new Date(), data.sources || []);
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // keep incomplete line
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const jsonStr = line.slice(6).trim();
+            if (!jsonStr) continue;
+            try {
+              const evt = JSON.parse(jsonStr);
+
+              if (evt.type === 'meta') {
+                source = evt.source;
+                sources = evt.sources || [];
+                // Create the message bubble now
+                msgDiv = document.createElement('div');
+                msgDiv.className = 'msg ai';
+                const aiAvatar = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg>`;
+                msgDiv.innerHTML = `
+                  <div class="msg-avatar">${aiAvatar}</div>
+                  <div class="msg-body">
+                    <div class="msg-bubble" id="streamBubble"></div>
+                    <div class="sources-row"></div>
+                    <div class="msg-meta"><span class="msg-time">${fmt(new Date())}</span></div>
+                  </div>`;
+                messages.appendChild(msgDiv);
+                bubbleEl = msgDiv.querySelector('#streamBubble');
+                metaEl = msgDiv.querySelector('.sources-row');
+
+              } else if (evt.type === 'token') {
+                if (!msgDiv) {
+                  // fallback if meta wasn't received
+                  msgDiv = document.createElement('div');
+                  msgDiv.className = 'msg ai';
+                  const aiAvatar = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg>`;
+                  msgDiv.innerHTML = `<div class="msg-avatar">${aiAvatar}</div><div class="msg-body"><div class="msg-bubble" id="streamBubble"></div><div class="sources-row"></div><div class="msg-meta"><span class="msg-time">${fmt(new Date())}</span></div></div>`;
+                  messages.appendChild(msgDiv);
+                  bubbleEl = msgDiv.querySelector('#streamBubble');
+                  metaEl = msgDiv.querySelector('.sources-row');
+                }
+                fullText += evt.text;
+                bubbleEl.innerHTML = fullText.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+                // Add blinking cursor while streaming
+                bubbleEl.innerHTML += '<span class="cursor">▊</span>';
+                messages.scrollTop = messages.scrollHeight;
+
+              } else if (evt.type === 'done') {
+                // Remove cursor
+                if (bubbleEl) bubbleEl.innerHTML = fullText.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+                // Add sources + cache badge
+                if (metaEl) {
+                  const cacheHtml = source === 'cache'
+                    ? `<span class="cache-badge"><svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg> cache hit</span>` : '';
+                  const sourcesHtml = sources.length > 0
+                    ? `<div class="sources-list"><span style="font-size:11px;color:var(--text3);font-weight:600;font-family:'DM Mono',monospace;">SOURCES:</span>${sources.map(p => `<span class="page-badge" title="Page ${p}">Page ${p}</span>`).join('')}</div>` : '';
+                  metaEl.innerHTML = sourcesHtml;
+                  const metaRow = msgDiv.querySelector('.msg-meta');
+                  if (metaRow) metaRow.innerHTML = cacheHtml + `<span class="msg-time">${fmt(new Date())}</span>`;
+                }
+
+              } else if (evt.type === 'error') {
+                hideTyping();
+                appendMessage('ai', evt.text, 'error', new Date(), []);
+              }
+            } catch(e) { /* skip bad JSON */ }
+          }
+        }
       } catch (e) {
         hideTyping();
-        appendMessage('ai', 'Something went wrong. Please check your backend connection.', 'error', new Date());
+        appendMessage('ai', 'Something went wrong. Please check your backend connection.', 'error', new Date(), []);
       } finally {
         isLoading = false;
         sendBtn.disabled = false;

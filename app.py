@@ -1,20 +1,18 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import shutil
-import os
+from fastapi.responses import FileResponse, StreamingResponse
+import shutil, os, json
 from pydantic import BaseModel
 from retrieve.process import RAGEngine
 from llm.gemini_client import GeminiService
+from dotenv import load_dotenv
 
-# Ensure an uploads directory exists
+load_dotenv()
+
 os.makedirs("uploads", exist_ok=True)
 
-# 1. Initialize 'app' ONLY ONCE
 app = FastAPI(title="Fardeen's RAG API")
 
-# 2. Setup CORS correctly
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,32 +21,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 3. Define QuestionRequest BEFORE using it in routes
 class QuestionRequest(BaseModel):
     query: str
     file_id: str
 
-# 4. Initialize your Engine and Service
 engine = RAGEngine()
-gemini = GeminiService(api_key="AIzaSyBn--kCzBKSCEXJXka0qsMAzuqN0m-rVAA")
-
-# 5. Routes
-@app.post("/clear-cache")
-async def clear_cache():
-    try:
-        engine.cache.clear() if hasattr(engine.cache, 'clear') else None
-        # Try common cache attribute names
-        for attr in ['cache', '_cache', 'query_cache', 'redis_cache']:
-            obj = getattr(engine, attr, None)
-            if obj and hasattr(obj, 'clear'):
-                obj.clear()
-                return {"status": "cache cleared"}
-            elif obj and hasattr(obj, 'flushdb'):
-                obj.flushdb()
-                return {"status": "cache cleared"}
-        return {"status": "no cache found to clear"}
-    except Exception as e:
-        return {"status": f"error: {str(e)}"}
+gemini = GeminiService(api_key=os.getenv("GEMINI_API_KEY"))
 
 @app.get("/")
 async def root():
@@ -69,7 +47,6 @@ async def upload_and_ingest(file: UploadFile = File(...)):
     cleaned = clean_pages(raw_data)
     chunks = create_metadata_chunks(cleaned)
     file_id = engine.process_and_ingest(chunks, file_path)
-
     return {"file_id": file_id, "status": "success"}
 
 @app.post("/ask")
@@ -80,8 +57,6 @@ async def ask_question(request: QuestionRequest):
             return {"answer": cached, "source": "cache", "sources": []}
 
         results = engine.search(request.query, file_id=request.file_id)
-
-        # Extract page numbers from Qdrant ScoredPoint results
         pages = []
         for r in results:
             try:
@@ -93,7 +68,6 @@ async def ask_question(request: QuestionRequest):
         pages.sort()
 
         answer = gemini.generate_answer(request.query, results)
-
         if "QUOTA EXCEEDED" in answer or "Error" in answer or answer.startswith("System Error"):
             return {"answer": answer, "source": "error", "sources": []}
 
@@ -102,3 +76,53 @@ async def ask_question(request: QuestionRequest):
 
     except Exception as e:
         return {"answer": f"System Error: {str(e)}", "source": "error", "sources": []}
+
+@app.post("/ask/stream")
+async def ask_stream(request: QuestionRequest):
+    """Streaming endpoint — sends tokens as they arrive via SSE."""
+
+    def generate():
+        # 1. Check cache — send instantly
+        cached = engine.check_cache(request.query)
+        if cached:
+            yield f"data: {json.dumps({'type': 'meta', 'source': 'cache', 'sources': []})}\n\n"
+            yield f"data: {json.dumps({'type': 'token', 'text': cached})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        # 2. Search
+        try:
+            results = engine.search(request.query, file_id=request.file_id)
+            pages = []
+            for r in results:
+                try:
+                    page = r.payload['metadata']['page']
+                    if page is not None and page not in pages:
+                        pages.append(int(page))
+                except (KeyError, TypeError, AttributeError):
+                    pass
+            pages.sort()
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'text': f'Search failed: {str(e)}'})}\n\n"
+            return
+
+        # 3. Send page metadata before streaming
+        yield f"data: {json.dumps({'type': 'meta', 'source': 'llm', 'sources': pages})}\n\n"
+
+        # 4. Stream tokens
+        full_answer = ""
+        is_error = False
+        for chunk in gemini.stream_answer(request.query, results):
+            full_answer += chunk
+            yield f"data: {json.dumps({'type': 'token', 'text': chunk})}\n\n"
+            if chunk.startswith("Error") or chunk.startswith("System Error") or "QUOTA EXCEEDED" in chunk:
+                is_error = True
+                break
+
+        # 5. Cache only successful answers
+        if not is_error and full_answer.strip():
+            engine.add_to_cache(request.query, full_answer)
+
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")

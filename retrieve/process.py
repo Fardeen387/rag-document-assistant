@@ -1,3 +1,4 @@
+import os
 import uuid
 import sys
 from tqdm import tqdm
@@ -26,7 +27,10 @@ class RAGEngine:
         self.reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
         
         # 2. Database Connection
-        self.client = QdrantClient(host="localhost", port=6333)
+        self.client = QdrantClient(
+            url=os.getenv("QDRANT_URL"),
+            api_key=os.getenv("QDRANT_API_KEY")
+        )
         self.collection_name = "dynamic_rag_pro"
         self.cache_collection = "llm_semantic_cache"
         
@@ -46,6 +50,13 @@ class RAGEngine:
                 }
             )
             print(f"✅ Created Hybrid Collection: {self.collection_name}")
+            # Create index for file_id filtering (required by Qdrant Cloud)
+            self.client.create_payload_index(
+                collection_name=self.collection_name,
+                field_name="metadata.file_id",
+                field_schema="keyword"
+            )
+            print("✅ Created index for metadata.file_id")
 
         # Cache Collection
         if not self.client.collection_exists(self.cache_collection):

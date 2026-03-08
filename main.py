@@ -6,6 +6,7 @@ from ingestion.cleaner import clean_pages
 from ingestion.chunker import create_metadata_chunks
 from llm.gemini_client import GeminiService
 
+load_dotenv()
 # Ensure terminal handles special characters correctly
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -13,7 +14,7 @@ if sys.stdout.encoding != 'utf-8':
 def run_pro_rag():
     # --- CONFIGURATION ---
     # Fardeen, ensure you use a fresh key from AI Studio
-    API_KEY = "AIzaSyBn--kCzBKSCEXJXka0qsMAzuqN0m-rVAA"
+    API_KEY = os.getenv("GEMINI_API_KEY")
     PDF_PATH = "ingestion/ml_notes.pdf"
     
     # Initialize Engine (Hybrid + Cache) and Gemini Service
