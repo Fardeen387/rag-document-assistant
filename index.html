@@ -117,6 +117,21 @@
 
     .hint-bar { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; padding: 10px; border-top: 1px solid var(--border); }
 
+    .page-badge {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      color: var(--accent2);
+      padding: 2px 8px;
+      border-radius: 4px;
+      transition: all 0.2s;
+      cursor: help;
+      display: inline-block;
+    }
+    .page-badge:hover { background: var(--accent-glow); border-color: var(--accent); }
+    .sources-list { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
     @keyframes spin { to { transform: rotate(360deg); } }
     .spin { animation: spin 1s linear infinite; }
 
@@ -330,7 +345,7 @@
       }
     }
 
-    function appendMessage(role, text, source, time) {
+    function appendMessage(role, text, source, time, sources) {
       const emptyEl = document.getElementById('emptyState');
       if (emptyEl) emptyEl.style.display = 'none';
 
@@ -338,6 +353,13 @@
       const timeFmt = fmt(time || new Date());
       const cacheHtml = source === 'cache'
         ? `<span class="cache-badge"><svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg> cache hit</span>`
+        : '';
+
+      const sourcesHtml = (!isUser && sources && sources.length > 0)
+        ? `<div class="sources-list">
+            <span style="font-size:11px;color:var(--text3);font-weight:600;font-family:'DM Mono',monospace;">SOURCES:</span>
+            ${sources.map(p => `<span class="page-badge" title="Jump to page ${p}">Page ${p}</span>`).join('')}
+           </div>`
         : '';
 
       const userAvatar = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
@@ -349,6 +371,7 @@
         <div class="msg-avatar">${isUser ? userAvatar : aiAvatar}</div>
         <div class="msg-body">
           <div class="msg-bubble">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</div>
+          ${sourcesHtml}
           <div class="msg-meta">${cacheHtml}<span class="msg-time">${timeFmt}</span></div>
         </div>`;
       messages.appendChild(div);
@@ -392,7 +415,7 @@
         });
         const data = await res.json();
         hideTyping();
-        appendMessage('ai', data.answer, data.source, new Date());
+        appendMessage('ai', data.answer, data.source, new Date(), data.sources || []);
       } catch (e) {
         hideTyping();
         appendMessage('ai', 'Something went wrong. Please check your backend connection.', 'error', new Date());

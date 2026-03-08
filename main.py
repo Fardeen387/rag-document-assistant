@@ -13,7 +13,7 @@ if sys.stdout.encoding != 'utf-8':
 def run_pro_rag():
     # --- CONFIGURATION ---
     # Fardeen, ensure you use a fresh key from AI Studio
-    API_KEY = "AIzaSyADcFFjrLAbVmCyE66y068D87WpJcnGEcc"
+    API_KEY = "AIzaSyBn--kCzBKSCEXJXka0qsMAzuqN0m-rVAA"
     PDF_PATH = "ingestion/ml_notes.pdf"
     
     # Initialize Engine (Hybrid + Cache) and Gemini Service

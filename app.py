@@ -30,9 +30,26 @@ class QuestionRequest(BaseModel):
 
 # 4. Initialize your Engine and Service
 engine = RAGEngine()
-gemini = GeminiService(api_key="AIzaSyADcFFjrLAbVmCyE66y068D87WpJcnGEcc")
+gemini = GeminiService(api_key="AIzaSyBn--kCzBKSCEXJXka0qsMAzuqN0m-rVAA")
 
 # 5. Routes
+@app.post("/clear-cache")
+async def clear_cache():
+    try:
+        engine.cache.clear() if hasattr(engine.cache, 'clear') else None
+        # Try common cache attribute names
+        for attr in ['cache', '_cache', 'query_cache', 'redis_cache']:
+            obj = getattr(engine, attr, None)
+            if obj and hasattr(obj, 'clear'):
+                obj.clear()
+                return {"status": "cache cleared"}
+            elif obj and hasattr(obj, 'flushdb'):
+                obj.flushdb()
+                return {"status": "cache cleared"}
+        return {"status": "no cache found to clear"}
+    except Exception as e:
+        return {"status": f"error: {str(e)}"}
+
 @app.get("/")
 async def root():
     return FileResponse("index.html")
@@ -58,27 +75,30 @@ async def upload_and_ingest(file: UploadFile = File(...)):
 @app.post("/ask")
 async def ask_question(request: QuestionRequest):
     try:
-        # 1. Check Cache
         cached = engine.check_cache(request.query)
         if cached:
-            return {"answer": cached, "source": "cache"}
-        
-        # 2. Search & Generate
-        results = engine.search(request.query, file_id=request.file_id)
-        answer = gemini.generate_answer(request.query, results)
-        
-        # --- THE FIX STARTS HERE ---
-        # 3. Only cache if the answer is NOT an error
-        error_keywords = ["Error", "503", "demand", "quota", "limit"]
-        is_error = any(word.lower() in answer.lower() for word in error_keywords)
+            return {"answer": cached, "source": "cache", "sources": []}
 
-        if not is_error:
-            engine.add_to_cache(request.query, answer)
-            return {"answer": answer, "source": "llm"}
-        else:
-            # Return the error but DON'T save it to the cache
-            return {"answer": answer, "source": "error"}
-        # --- THE FIX ENDS HERE ---
-        
+        results = engine.search(request.query, file_id=request.file_id)
+
+        # Extract page numbers from Qdrant ScoredPoint results
+        pages = []
+        for r in results:
+            try:
+                page = r.payload['metadata']['page']
+                if page is not None and page not in pages:
+                    pages.append(int(page))
+            except (KeyError, TypeError, AttributeError):
+                pass
+        pages.sort()
+
+        answer = gemini.generate_answer(request.query, results)
+
+        if "QUOTA EXCEEDED" in answer or "Error" in answer or answer.startswith("System Error"):
+            return {"answer": answer, "source": "error", "sources": []}
+
+        engine.add_to_cache(request.query, answer)
+        return {"answer": answer, "source": "llm", "sources": pages}
+
     except Exception as e:
-        return {"answer": f"System Error: {str(e)}", "source": "error"}
+        return {"answer": f"System Error: {str(e)}", "source": "error", "sources": []}
