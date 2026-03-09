@@ -329,7 +329,25 @@
         dbg.innerHTML += '<br>🟢 Step 4: JSON = ' + JSON.stringify(data);
         if (!data.file_id) throw new Error('No file_id in response: ' + JSON.stringify(data));
         fileId = data.file_id;
-        dbg.innerHTML += '<br>🟢 Step 5: fileId set, enabling chat...';
+        dbg.innerHTML += '<br>🟢 Step 4: Polling for processing status...';
+        setUploadState('uploading', file.name);
+        
+        // Poll until done
+        let attempts = 0;
+        while (attempts < 60) {
+          await new Promise(r => setTimeout(r, 3000));
+          const statusRes = await fetch(`${API_BASE}/status/${fileId}`);
+          const statusData = await statusRes.json();
+          dbg.innerHTML += '<br>⏳ Status: ' + statusData.status;
+          if (statusData.status === 'done') {
+            fileId = statusData.file_id;
+            break;
+          } else if (statusData.status === 'error') {
+            throw new Error('Processing failed: ' + statusData.message);
+          }
+          attempts++;
+        }
+        
         setUploadState('done', file.name);
         enableChat();
         dbg.innerHTML += '<br>✅ DONE — chat should be enabled now';
