@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir numpy
+RUN pip install --no-cache-dir "numpy<2.0"
 
 RUN pip install --no-cache-dir torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
 
