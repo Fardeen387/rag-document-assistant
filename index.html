@@ -307,14 +307,13 @@
       setUploadState('uploading', file.name);
       isUploading = true;
       fileId = null;
-
-      // DEBUG: show step-by-step on page
+    
       const dbg = document.createElement('div');
       dbg.id = 'debugLog';
       dbg.style = 'position:fixed;bottom:10px;right:10px;background:#1a1a2e;border:2px solid #6c63ff;color:#e8e8f0;padding:14px;border-radius:10px;font-family:monospace;font-size:12px;z-index:9999;max-width:400px;line-height:1.8';
       dbg.innerHTML = '🔵 Step 1: handleFile called<br>📄 File: ' + file.name;
       document.body.appendChild(dbg);
-
+    
       try {
         dbg.innerHTML += '<br>🔵 Step 2: Sending fetch to ' + API_BASE + '/upload';
         const fd = new FormData();
@@ -327,38 +326,45 @@
         }
         const data = await res.json();
         dbg.innerHTML += '<br>🟢 Step 4: JSON = ' + JSON.stringify(data);
-        if (!data.file_id) throw new Error('No file_id in response: ' + JSON.stringify(data));
-        fileId = data.file_id;
-        dbg.innerHTML += '<br>🟢 Step 4: Polling for processing status...';
-        setUploadState('uploading', file.name);
+        if (!data.file_id) throw new Error('No file_id in response');
         
-        // Poll until done
+        const tempId = data.file_id;
+        dbg.innerHTML += '<br>⏳ Polling for processing status...';
+    
         let attempts = 0;
         while (attempts < 60) {
           await new Promise(r => setTimeout(r, 3000));
-          const statusRes = await fetch(`${API_BASE}/status/${fileId}`);
-          const statusData = await statusRes.json();
-          dbg.innerHTML += '<br>⏳ Status: ' + statusData.status;
-          if (statusData.status === 'done') {
-            fileId = statusData.file_id;
-            break;
-          } else if (statusData.status === 'error') {
-            throw new Error('Processing failed: ' + statusData.message);
+          try {
+            const statusRes = await fetch(`${API_BASE}/status/${tempId}`);
+            const text = await statusRes.text();
+            let statusData;
+            try { statusData = JSON.parse(text); } 
+            catch(e) { dbg.innerHTML += '<br>⏳ Server waking, retrying...'; attempts++; continue; }
+            
+            dbg.innerHTML += '<br>⏳ Status: ' + statusData.status;
+            if (statusData.status === 'done') {
+              fileId = statusData.file_id || tempId;
+              break;
+            } else if (statusData.status === 'error') {
+              throw new Error('Processing failed: ' + statusData.message);
+            }
+          } catch(e) {
+            if (e.message.includes('Processing failed')) throw e;
+            dbg.innerHTML += '<br>⏳ Retrying...';
           }
           attempts++;
         }
+    
+        if (!fileId) throw new Error('Processing timed out');
         
         setUploadState('done', file.name);
         enableChat();
-        dbg.innerHTML += '<br>✅ DONE — chat should be enabled now';
+        dbg.innerHTML += '<br>✅ DONE!';
         setTimeout(() => { const d = document.getElementById('debugLog'); if(d) d.remove(); }, 5000);
       } catch (e) {
         dbg.innerHTML += '<br>🔴 ERROR: ' + e.message;
-        console.error('Upload error:', e);
         const isNetwork = e instanceof TypeError && e.message.toLowerCase().includes('fetch');
-        showError(isNetwork
-          ? `Cannot reach backend at ${API_BASE}. Is your FastAPI server running?`
-          : e.message);
+        showError(isNetwork ? `Cannot reach backend at ${API_BASE}. Is your FastAPI server running?` : e.message);
         setUploadState('idle');
       } finally {
         isUploading = false;
