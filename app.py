@@ -1,7 +1,7 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
-import shutil, os, json, time
+import shutil, os, json
 from pydantic import BaseModel
 from retrieve.process import RAGEngine
 from llm.gemini_client import GeminiService
@@ -28,11 +28,23 @@ class QuestionRequest(BaseModel):
 engine = RAGEngine()
 gemini = GeminiService(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Track processing status
-processing_status = {}
+@app.get("/")
+async def root():
+    return FileResponse("index.html")
 
-def process_file_background(file_path: str, temp_id: str):
+@app.get("/health")
+async def health():
+    return JSONResponse(content={"status": "ok"})
+
+@app.post("/upload")
+async def upload_and_ingest(file: UploadFile = File(...)):
+    """Synchronous upload — processes fully before returning."""
     try:
+        os.makedirs("uploads", exist_ok=True)
+        file_path = f"uploads/{file.filename}"
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
         from ingestion.loader import load_pdf_with_metadata
         from ingestion.cleaner import clean_pages
         from ingestion.chunker import create_metadata_chunks
@@ -41,45 +53,18 @@ def process_file_background(file_path: str, temp_id: str):
         cleaned = clean_pages(raw_data)
         chunks = create_metadata_chunks(cleaned)
         file_id = engine.process_and_ingest(chunks, file_path)
-        processing_status[temp_id] = {"status": "done", "file_id": file_id}
+        return JSONResponse(content={"file_id": file_id, "status": "success"})
     except Exception as e:
-        processing_status[temp_id] = {"status": "error", "message": str(e)}
-
-@app.get("/")
-async def root():
-    return FileResponse("index.html")
-
-@app.post("/upload")
-async def upload_and_ingest(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    os.makedirs("uploads", exist_ok=True)
-    file_path = f"uploads/{file.filename}"
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    import uuid
-    temp_id = str(uuid.uuid4())
-    processing_status[temp_id] = {"status": "processing"}
-    background_tasks.add_task(process_file_background, file_path, temp_id)
-    return {"file_id": temp_id, "status": "processing"}
-
-@app.get("/status/{file_id}")
-async def get_status(file_id: str):
-    return processing_status.get(file_id, {"status": "unknown"})
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/ask")
 async def ask_question(request: QuestionRequest):
     try:
-        status = processing_status.get(request.file_id, {})
-        if status.get("status") == "processing":
-            return {"answer": "Document is still processing, please wait...", "source": "processing", "sources": []}
-
-        actual_file_id = status.get("file_id", request.file_id)
-
         cached = engine.check_cache(request.query)
         if cached:
             return {"answer": cached, "source": "cache", "sources": []}
 
-        results = engine.search(request.query, file_id=actual_file_id)
+        results = engine.search(request.query, file_id=request.file_id)
         pages = []
         for r in results:
             try:
@@ -103,14 +88,6 @@ async def ask_question(request: QuestionRequest):
 @app.post("/ask/stream")
 async def ask_stream(request: QuestionRequest):
     def generate():
-        status = processing_status.get(request.file_id, {})
-        if status.get("status") == "processing":
-            yield f"data: {json.dumps({'type': 'token', 'text': 'Document is still processing, please wait a moment and try again.'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        actual_file_id = status.get("file_id", request.file_id)
-
         cached = engine.check_cache(request.query)
         if cached:
             yield f"data: {json.dumps({'type': 'meta', 'source': 'cache', 'sources': []})}\n\n"
@@ -119,7 +96,7 @@ async def ask_stream(request: QuestionRequest):
             return
 
         try:
-            results = engine.search(request.query, file_id=actual_file_id)
+            results = engine.search(request.query, file_id=request.file_id)
             pages = []
             for r in results:
                 try:
