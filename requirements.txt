@@ -6,9 +6,9 @@ requests
 python-dotenv
 qdrant-client
 fastembed
-transformers
-sentence-transformers
-accelerate
+transformers==4.40.0
+sentence-transformers==3.0.0
+accelerate==0.30.0
 pypdf
 ftfy
 numpy
