@@ -1,7 +1,7 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-import shutil, os, json
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+import shutil, os, json, time
 from pydantic import BaseModel
 from retrieve.process import RAGEngine
 from llm.gemini_client import GeminiService
@@ -28,35 +28,58 @@ class QuestionRequest(BaseModel):
 engine = RAGEngine()
 gemini = GeminiService(api_key=os.getenv("GEMINI_API_KEY"))
 
+# Track processing status
+processing_status = {}
+
+def process_file_background(file_path: str, temp_id: str):
+    try:
+        from ingestion.loader import load_pdf_with_metadata
+        from ingestion.cleaner import clean_pages
+        from ingestion.chunker import create_metadata_chunks
+
+        raw_data = load_pdf_with_metadata(file_path)
+        cleaned = clean_pages(raw_data)
+        chunks = create_metadata_chunks(cleaned)
+        file_id = engine.process_and_ingest(chunks, file_path)
+        processing_status[temp_id] = {"status": "done", "file_id": file_id}
+    except Exception as e:
+        processing_status[temp_id] = {"status": "error", "message": str(e)}
+
 @app.get("/")
 async def root():
     return FileResponse("index.html")
 
 @app.post("/upload")
-async def upload_and_ingest(file: UploadFile = File(...)):
+async def upload_and_ingest(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     os.makedirs("uploads", exist_ok=True)
     file_path = f"uploads/{file.filename}"
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    from ingestion.loader import load_pdf_with_metadata
-    from ingestion.cleaner import clean_pages
-    from ingestion.chunker import create_metadata_chunks
+    import uuid
+    temp_id = str(uuid.uuid4())
+    processing_status[temp_id] = {"status": "processing"}
+    background_tasks.add_task(process_file_background, file_path, temp_id)
+    return {"file_id": temp_id, "status": "processing"}
 
-    raw_data = load_pdf_with_metadata(file_path)
-    cleaned = clean_pages(raw_data)
-    chunks = create_metadata_chunks(cleaned)
-    file_id = engine.process_and_ingest(chunks, file_path)
-    return {"file_id": file_id, "status": "success"}
+@app.get("/status/{file_id}")
+async def get_status(file_id: str):
+    return processing_status.get(file_id, {"status": "unknown"})
 
 @app.post("/ask")
 async def ask_question(request: QuestionRequest):
     try:
+        status = processing_status.get(request.file_id, {})
+        if status.get("status") == "processing":
+            return {"answer": "Document is still processing, please wait...", "source": "processing", "sources": []}
+
+        actual_file_id = status.get("file_id", request.file_id)
+
         cached = engine.check_cache(request.query)
         if cached:
             return {"answer": cached, "source": "cache", "sources": []}
 
-        results = engine.search(request.query, file_id=request.file_id)
+        results = engine.search(request.query, file_id=actual_file_id)
         pages = []
         for r in results:
             try:
@@ -79,10 +102,15 @@ async def ask_question(request: QuestionRequest):
 
 @app.post("/ask/stream")
 async def ask_stream(request: QuestionRequest):
-    """Streaming endpoint — sends tokens as they arrive via SSE."""
-
     def generate():
-        # 1. Check cache — send instantly
+        status = processing_status.get(request.file_id, {})
+        if status.get("status") == "processing":
+            yield f"data: {json.dumps({'type': 'token', 'text': 'Document is still processing, please wait a moment and try again.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        actual_file_id = status.get("file_id", request.file_id)
+
         cached = engine.check_cache(request.query)
         if cached:
             yield f"data: {json.dumps({'type': 'meta', 'source': 'cache', 'sources': []})}\n\n"
@@ -90,9 +118,8 @@ async def ask_stream(request: QuestionRequest):
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
 
-        # 2. Search
         try:
-            results = engine.search(request.query, file_id=request.file_id)
+            results = engine.search(request.query, file_id=actual_file_id)
             pages = []
             for r in results:
                 try:
@@ -106,10 +133,8 @@ async def ask_stream(request: QuestionRequest):
             yield f"data: {json.dumps({'type': 'error', 'text': f'Search failed: {str(e)}'})}\n\n"
             return
 
-        # 3. Send page metadata before streaming
         yield f"data: {json.dumps({'type': 'meta', 'source': 'llm', 'sources': pages})}\n\n"
 
-        # 4. Stream tokens
         full_answer = ""
         is_error = False
         for chunk in gemini.stream_answer(request.query, results):
@@ -119,7 +144,6 @@ async def ask_stream(request: QuestionRequest):
                 is_error = True
                 break
 
-        # 5. Cache only successful answers
         if not is_error and full_answer.strip():
             engine.add_to_cache(request.query, full_answer)
 
