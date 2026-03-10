@@ -30,37 +30,30 @@ gemini = GeminiService(api_key=os.getenv("GEMINI_API_KEY"))
 
 @app.get("/")
 async def root():
-    return FileResponse("index.html")
-
-@app.get("/health")
-async def health():
-    return JSONResponse(content={"status": "ok"})
+    return JSONResponse(content={"status": "ok", "message": "RAG API is running"})
 
 @app.post("/upload")
 async def upload_and_ingest(file: UploadFile = File(...)):
-    """Synchronous upload — processes fully before returning."""
-    try:
-        os.makedirs("uploads", exist_ok=True)
-        file_path = f"uploads/{file.filename}"
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    os.makedirs("uploads", exist_ok=True)
+    file_path = f"uploads/{file.filename}"
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-        from ingestion.loader import load_pdf_with_metadata
-        from ingestion.cleaner import clean_pages
-        from ingestion.chunker import create_metadata_chunks
+    from ingestion.loader import load_pdf_with_metadata
+    from ingestion.cleaner import clean_pages
+    from ingestion.chunker import create_metadata_chunks
 
-        raw_data = load_pdf_with_metadata(file_path)
-        cleaned = clean_pages(raw_data)
-        chunks = create_metadata_chunks(cleaned)
-        file_id = engine.process_and_ingest(chunks, file_path)
-        return JSONResponse(content={"file_id": file_id, "status": "success"})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    raw_data = load_pdf_with_metadata(file_path)
+    cleaned = clean_pages(raw_data)
+    chunks = create_metadata_chunks(cleaned)
+    file_id = engine.process_and_ingest(chunks, file_path)
+    return {"file_id": file_id, "status": "success"}
 
 @app.post("/ask")
 async def ask_question(request: QuestionRequest):
     try:
-        cached = engine.check_cache(request.query)
+        cache_key = f"{request.file_id}:{request.query}"
+        cached = engine.check_cache(cache_key)
         if cached:
             return {"answer": cached, "source": "cache", "sources": []}
 
@@ -79,7 +72,7 @@ async def ask_question(request: QuestionRequest):
         if "QUOTA EXCEEDED" in answer or "Error" in answer or answer.startswith("System Error"):
             return {"answer": answer, "source": "error", "sources": []}
 
-        engine.add_to_cache(request.query, answer)
+        engine.add_to_cache(cache_key, answer)
         return {"answer": answer, "source": "llm", "sources": pages}
 
     except Exception as e:
@@ -88,7 +81,9 @@ async def ask_question(request: QuestionRequest):
 @app.post("/ask/stream")
 async def ask_stream(request: QuestionRequest):
     def generate():
-        cached = engine.check_cache(request.query)
+        cache_key = f"{request.file_id}:{request.query}"
+
+        cached = engine.check_cache(cache_key)
         if cached:
             yield f"data: {json.dumps({'type': 'meta', 'source': 'cache', 'sources': []})}\n\n"
             yield f"data: {json.dumps({'type': 'token', 'text': cached})}\n\n"
@@ -122,7 +117,7 @@ async def ask_stream(request: QuestionRequest):
                 break
 
         if not is_error and full_answer.strip():
-            engine.add_to_cache(request.query, full_answer)
+            engine.add_to_cache(cache_key, full_answer)
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
