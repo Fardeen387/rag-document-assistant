@@ -103,4 +103,4 @@ HF_TOKEN=your_huggingface_token_here
 ## Author
 
 **Fardeen Khan** — B.Tech CSE, BIST Bhopal  
-Open to AI/ML internship opportunities → [fardeenkhan42504@gmail.com](mailto:fardeenkhan42504@gmail.com) · [LinkedIn](https://linkedin.com/in/fardeenkhan)
+Open to AI/ML internship opportunities → [fardeenkhan42504@gmail.com](mailto:fardeenkhan42504@gmail.com) · [LinkedIn](https://www.linkedin.com/in/fardeen-khan-b778b1276/)
