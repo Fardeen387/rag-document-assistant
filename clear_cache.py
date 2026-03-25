@@ -1,6 +1,6 @@
 from qdrant_client import QdrantClient
 
-# 1. Connect to your local Qdrant (Docker)
+# 1. Connect to local Qdrant (Docker)
 client = QdrantClient("http://localhost:6333")
 
 COLLECTION_NAME = "semantic_cache"
@@ -9,9 +9,7 @@ try:
     # 2. Delete the collection entirely
     client.delete_collection(collection_name=COLLECTION_NAME)
     print(f"✅ Successfully deleted {COLLECTION_NAME}")
-    
-    # 3. Optional: Re-create it immediately (Empty)
-    # This ensures your app doesn't crash on the next 'ask'
+
     from qdrant_client.http.models import VectorParams, Distance
     client.create_collection(
         collection_name=COLLECTION_NAME,
