@@ -7,9 +7,7 @@ if sys.stdout.encoding != 'utf-8':
 
 def start_chat():
     engine = RAGEngine()
-    
-    # In a real app, you'd get this ID from your database or session
-    # For now, let's process the file once to get the ID
+
     file_path = "ingestion/ml_notes.pdf"
     print("--- Preparing Document ---")
     doc_id = engine.process_and_ingest(file_path)
